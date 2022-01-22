@@ -1,0 +1,7 @@
+{
+    "files.associations": {
+        "sdl.h": "c",
+        "sdl_filesystem.h": "c",
+        "sdl_events.h": "c"
+    }
+}
