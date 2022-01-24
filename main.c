@@ -3,39 +3,112 @@
 #include <assert.h>
 #include <stdbool.h>
 
-size_t const FREK = 48000;
-float const SAMPLE_DELTA_TIME = 1.0 / FREK;
-float const STEP_TIME_MIN = 1.0f;
-float const STEP_TIME_MAX = 200.0f;
-
-//SLIDER BODY
-int const STEP_TIME_SLIDER_X = 100.0f;
-int const STEP_TIME_SLIDER_Y = 100.0f;
-float const STEP_TIME_SLIDER_LEN = 500.0f;
-int const STEP_TIME_SLIDER_THICC = 5.f;
-int const STEP_TIME_SLIDER_COLOR = 0x00FF00FF;
-int const STEP_TIME_SLIDER_BACKGROUND = 0x181818FF;
-
-//GRIP
-int const STEP_TIME_GRIP_SIZE = 10;
-int const STEP_TIME_GRIP_COLOR = 0xFF0000FF;
-
-//0xRRGGBBAA
 #define HEXCOLOR(code)              \
     ((code) >> (8 * 3)) & 0xFF,     \
         ((code) >> (8 * 2)) & 0xFF, \
         ((code) >> (8 * 1)) & 0xFF, \
         ((code) >> (8 * 0)) & 0xFF
 
+size_t const FREK = 48000;
+float const SAMPLE_DELTA_TIME = 1.0 / FREK;
+float const STEP_TIME_MIN = 1.0f;
+float const STEP_TIME_MAX = 200.0f;
+
+//SLIDER BODY
+float const STEP_TIME_SLIDER_THICC = 5.f;
+int const STEP_TIME_SLIDER_COLOR = 0x00FF00FF;
+int const STEP_TIME_SLIDER_BACKGROUND = 0x181818FF;
+
+//GRIP
+float const STEP_TIME_GRIP_SIZE = 10;
+int const STEP_TIME_GRIP_COLOR = 0xFF0000FF;
+
+float clampf(float value, float min, float max)
+{
+    if (value < min)
+        value = min;
+    if (value > max)
+        value = max;
+    return value;
+}
+float ilerpf(float value, float min, float max)
+{
+    return (value - min) / (max - min);
+}
+
+float lerpf(float value, float min, float max)
+{
+    return (max - min) * value + min;
+}
+
+int active_id = -1;
+
+void slider(SDL_Renderer *renderer, float slider_x, float slider_y, float len, float id,
+            float *value, float min, float max)
+{
+    //SLIDER BODY
+    {
+        SDL_SetRenderDrawColor(renderer, HEXCOLOR(STEP_TIME_SLIDER_COLOR));
+
+        SDL_Rect rect = {
+            .x = slider_x,
+            .y = slider_y - 0.5 * STEP_TIME_SLIDER_THICC,
+            .w = len,
+            .h = STEP_TIME_SLIDER_THICC,
+        };
+        SDL_RenderFillRect(renderer, &rect);
+    }
+    //GRIP
+    {
+        assert(min <= max);
+        float grip_value = ilerpf(*value, min, max) * len;
+
+        SDL_SetRenderDrawColor(renderer, HEXCOLOR(STEP_TIME_GRIP_COLOR));
+
+        SDL_Rect rect = {
+            .x = slider_x - STEP_TIME_GRIP_SIZE + grip_value,
+            .y = slider_y - STEP_TIME_GRIP_SIZE,
+            .w = STEP_TIME_GRIP_SIZE * 2,
+            .h = STEP_TIME_GRIP_SIZE * 2,
+        };
+        SDL_RenderFillRect(renderer, &rect);
+
+        int x, y, button;
+        button = SDL_GetMouseState(&x, &y);
+        if (active_id < 0)
+        {
+            SDL_Point point = {x, y};
+            if ((SDL_PointInRect(&point, &rect) && (button & SDL_BUTTON_LMASK) != 0))
+            {
+                active_id = id;
+            }
+        }
+        else
+        {
+            if (active_id == id)
+            {
+                if ((button & SDL_BUTTON_LMASK) == 0)
+                {
+                    active_id = -1;
+                }
+                else
+                {
+                    float offset_min = slider_x - STEP_TIME_GRIP_SIZE;
+                    float offset_max = offset_min + len;
+                    float xf = clampf(x - STEP_TIME_GRIP_SIZE, offset_min, offset_max);
+                    xf = ilerpf(xf, offset_min, offset_max);
+                    xf = lerpf(xf, min, max);
+                    *value = xf;
+                }
+            }
+        }
+        // printf("%f, %d,%d, %d \n", *value, x, y, *dragging);
+    }
+}
+//0xRRGGBBAA
 Sint16 sgn(int16_t x)
 {
     return ((x > 0) - (x < 0));
-}
-
-bool rect_contains_point(SDL_Rect rect, int x, int y)
-{
-
-    return (x > rect.x && x < rect.w && y > rect.y && y < rect.h);
 }
 
 typedef struct
@@ -43,15 +116,23 @@ typedef struct
     Sint16 current;
     Sint16 next;
     float step_time;
+    float volume;
     float a;
 } Gen;
+
+typedef enum
+{
+    SLIDE_FREQ = 0,
+    SLIDE_VOLUME,
+    SLIDE_COUNT,
+} Slider;
 
 void white_noise(Gen *gen, Sint16 *stream, size_t stream_len)
 {
     for (size_t i = 0; i < stream_len; ++i)
     {
         float gen_step = 1.0 / (gen->step_time * SAMPLE_DELTA_TIME);
-        stream[i] = gen->current + (gen->next - gen->current) * gen->a;
+        stream[i] = (gen->current + (gen->next - gen->current) * gen->a) * gen->volume;
         // printf("%d\n", stream[i]);
         gen->a += gen_step * SAMPLE_DELTA_TIME;
         if (gen->a >= 1)
@@ -74,6 +155,11 @@ void white_noise_callback(void *userdata, Uint8 *stream, int len)
 
 int main(void)
 {
+    if (SDL_Init(SDL_INIT_AUDIO | SDL_INIT_VIDEO) < 0)
+    {
+        fprintf(stderr, "ERROR: Could not initialize SDL: %s\n", SDL_GetError());
+        exit(1);
+    }
 
     SDL_Window *window = SDL_CreateWindow("Whine",
                                           0, 0, 800,
@@ -92,16 +178,16 @@ int main(void)
         fprintf(stderr, "ERROR: cant create renderer: %s ", SDL_GetError());
         exit(1);
     }
-    if (SDL_Init(SDL_INIT_AUDIO | SDL_INIT_VIDEO) < 0)
-    {
-        fprintf(stderr, "ERROR: Could not initialize SDL: %s\n", SDL_GetError());
-        exit(1);
-    }
 
     Gen gen = {
-        .step_time = 1,
+        .step_time = 10,
+        .volume = 0.5,
     };
-
+    static_assert(SLIDE_COUNT == 2, " Exhaustive defenition of sliders");
+    float *fields[SLIDE_COUNT] = {
+        [SLIDE_FREQ] = &gen.step_time,
+        [SLIDE_VOLUME] = &gen.volume,
+    };
     SDL_AudioSpec desired = {
         .freq = 48000,
         .format = AUDIO_S16LSB,
@@ -117,9 +203,9 @@ int main(void)
     }
 
     bool quite = false;
-    bool dragging_grip = false;
-
     SDL_PauseAudio(0);
+    // bool dragging_freq = false;
+    // bool dragging_volume = false;
 
     while (!quite)
     {
@@ -146,59 +232,8 @@ int main(void)
         SDL_SetRenderDrawColor(renderer, HEXCOLOR(STEP_TIME_SLIDER_BACKGROUND));
         SDL_RenderClear(renderer);
 
-        //SLIDER BODY
-        {
-            SDL_SetRenderDrawColor(renderer, HEXCOLOR(STEP_TIME_SLIDER_COLOR));
-
-            SDL_Rect rect = {
-                .x = STEP_TIME_SLIDER_X,
-                .y = STEP_TIME_SLIDER_Y - 0.5 * STEP_TIME_SLIDER_THICC,
-                .w = STEP_TIME_SLIDER_LEN,
-                .h = STEP_TIME_SLIDER_THICC,
-            };
-            SDL_RenderFillRect(renderer, &rect);
-        }
-        //GRIP
-        {
-            float grip_value = gen.step_time / (STEP_TIME_MAX - STEP_TIME_MIN) * STEP_TIME_SLIDER_LEN;
-
-            SDL_SetRenderDrawColor(renderer, HEXCOLOR(STEP_TIME_GRIP_COLOR));
-
-            SDL_Rect rect = {
-                .x = STEP_TIME_SLIDER_X - STEP_TIME_GRIP_SIZE + grip_value,
-                .y = STEP_TIME_SLIDER_Y - STEP_TIME_GRIP_SIZE,
-                .w = STEP_TIME_GRIP_SIZE * 2,
-                .h = STEP_TIME_GRIP_SIZE * 2,
-            };
-            SDL_RenderFillRect(renderer, &rect);
-
-            int x, y, button;
-            button = SDL_GetMouseState(&x, &y);
-            if (!dragging_grip)
-            {
-                SDL_Point point = {x, y};
-                if ((SDL_PointInRect(&point, &rect) && (button & SDL_BUTTON_LMASK) != 0))
-                    dragging_grip = true;
-            }
-            else
-            {
-                if ((button & SDL_BUTTON_LMASK) == 0)
-                    dragging_grip = false;
-                else
-                {
-                    float offset_max = STEP_TIME_SLIDER_X - STEP_TIME_GRIP_SIZE + STEP_TIME_SLIDER_LEN;
-                    float offset_min = STEP_TIME_SLIDER_X - STEP_TIME_GRIP_SIZE;
-                    float xf = x - STEP_TIME_GRIP_SIZE;
-                    if (xf < offset_min)
-                        xf = offset_min;
-                    if (xf > offset_max)
-                        xf = offset_max;
-                    gen.step_time = (xf - offset_min) / STEP_TIME_SLIDER_LEN * (STEP_TIME_MAX - STEP_TIME_MIN) + STEP_TIME_MIN;
-                    printf("%f\n", gen.step_time);
-                }
-            }
-        }
-
+        slider(renderer, 100, 100, 500, SLIDE_FREQ, fields[0], 1, 200);
+        slider(renderer, 100, 200, 500, SLIDE_VOLUME, fields[1], 0, 1);
         SDL_RenderPresent(renderer);
     }
     printf("OK\n");
